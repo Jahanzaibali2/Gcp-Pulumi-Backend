@@ -1,0 +1,15 @@
+# Python junk
+__pycache__/
+*.pyc
+*.pyo
+
+# Pulumi junk
+.pulumi-home/
+pulumi-state/
+
+# Local payloads & temp
+payload_*.json
+key.txt
+
+# Ignore local test scripts
+test_api.py
