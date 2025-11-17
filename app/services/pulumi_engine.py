@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, Any
 from pulumi import automation as auto
 from .program_builder import build_pulumi_program
+from .validator import IRValidator
 
 DEFAULT_REGION = os.getenv("GCP_REGION", "us-central1")
 
@@ -17,15 +18,24 @@ def _ensure_pulumi_env() -> dict:
     # 1) pulumi.exe PATH hint (Windows) - Set PATH early and update os.environ immediately
     pulumi_dir = None
     if not shutil.which("pulumi"):
-        default_dir = Path(r"C:\Program Files (x86)\Pulumi")
-        if (default_dir / "pulumi.exe").exists():
-            pulumi_dir = str(default_dir)
-            # Update both the env dict AND os.environ immediately
+        # Check for custom Pulumi CLI path from environment
+        custom_pulumi_path = os.getenv("PULUMI_CLI_PATH")
+        if custom_pulumi_path:
+            pulumi_dir = str(Path(custom_pulumi_path))
             new_path = pulumi_dir + os.pathsep + env.get("PATH", "")
             env["PATH"] = new_path
             os.environ["PATH"] = new_path
         else:
-            raise RuntimeError("pulumi.exe not found on PATH. Install Pulumi or add it to PATH.")
+            # Try default Windows location
+            default_dir = Path(r"C:\Program Files (x86)\Pulumi")
+            if (default_dir / "pulumi.exe").exists():
+                pulumi_dir = str(default_dir)
+                # Update both the env dict AND os.environ immediately
+                new_path = pulumi_dir + os.pathsep + env.get("PATH", "")
+                env["PATH"] = new_path
+                os.environ["PATH"] = new_path
+            else:
+                raise RuntimeError("pulumi.exe not found on PATH. Install Pulumi, add it to PATH, or set PULUMI_CLI_PATH in .env")
     else:
         # Pulumi found, but ensure it's in PATH for subprocesses
         pulumi_path = shutil.which("pulumi")
@@ -37,9 +47,10 @@ def _ensure_pulumi_env() -> dict:
                 os.environ["PATH"] = new_path
 
     # 2) Local backend (no Pulumi Cloud token needed)
-    # Create absolute path to state directory
+    # Get paths from environment variables or use defaults
     base_dir = Path.cwd().resolve()
-    state_dir = base_dir / "pulumi-state"
+    state_dir_name = os.getenv("PULUMI_STATE_DIR", "pulumi-state")
+    state_dir = Path(state_dir_name) if Path(state_dir_name).is_absolute() else base_dir / state_dir_name
     state_dir.mkdir(parents=True, exist_ok=True)
     
     # For local file backend, try using just the directory path
@@ -56,8 +67,8 @@ def _ensure_pulumi_env() -> dict:
     env["PULUMI_BACKEND_URL"] = f"file://{normalized}"
 
     # Optional: keep plugins/cache tidy
-    base_dir = Path.cwd().resolve()
-    pulumi_home = base_dir / ".pulumi-home"
+    pulumi_home_name = os.getenv("PULUMI_HOME_DIR", ".pulumi-home")
+    pulumi_home = Path(pulumi_home_name) if Path(pulumi_home_name).is_absolute() else base_dir / pulumi_home_name
     pulumi_home.mkdir(parents=True, exist_ok=True)
     env["PULUMI_HOME"] = str(pulumi_home)
     
@@ -69,8 +80,10 @@ def _ensure_pulumi_env() -> dict:
     return env
 
 # Create work directory with absolute path
+# Get from environment variable or use default
 base_dir = Path.cwd().resolve()
-WORK_DIR = base_dir / "pulumi-work"
+work_dir_name = os.getenv("PULUMI_WORK_DIR", "pulumi-work")
+WORK_DIR = Path(work_dir_name) if Path(work_dir_name).is_absolute() else base_dir / work_dir_name
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
 class PulumiEngine:
@@ -91,6 +104,24 @@ class PulumiEngine:
     def preview(ir: Dict[str, Any]):
         project = ir.get("project", "canvas")
         env_name = ir.get("env", "dev")
+        
+        # Run validation before preview
+        project_id = os.environ.get("GOOGLE_PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+        region = ir.get("location") or ir.get("region") or os.environ.get("GOOGLE_REGION") or DEFAULT_REGION
+        
+        validator = IRValidator(ir, project_id or "unknown", region)
+        validation_errors, validation_warnings = validator.validate()
+        
+        # If there are validation errors, return them immediately
+        if validation_errors:
+            return {
+                "preview": False,
+                "validation_failed": True,
+                "errors": validation_errors,
+                "warnings": validation_warnings,
+                "message": "Validation failed. Please fix the errors before deploying."
+            }
+        
         program = build_pulumi_program(ir)
 
         pulumi_env = _ensure_pulumi_env()
@@ -111,7 +142,13 @@ class PulumiEngine:
         PulumiEngine._set_gcp_config(stack, ir)
 
         res = stack.preview(on_output=print)
-        return {"preview": True, "changeSummary": res.change_summary}
+        
+        # Include validation warnings in the response even if preview succeeds
+        return {
+            "preview": True,
+            "changeSummary": res.change_summary,
+            "validation_warnings": validation_warnings if validation_warnings else None
+        }
 
     @staticmethod
     def up(ir: Dict[str, Any]):

@@ -9,11 +9,14 @@ class ServiceRegistry:
     """
     def __init__(self, fabric_instance):
         self.fabric = fabric_instance
-        # Only 3 core services initially - easily extensible
+        # 6 services - easily extensible
         self._service_registry: Dict[str, Callable] = {
             "gcp.storage": self.fabric._create_storage,
             "gcp.pubsub": self.fabric._create_pubsub,
             "gcp.run": self.fabric._create_cloud_run,
+            "gcp.cloudfunctions": self.fabric._create_cloud_function,
+            "gcp.firestore": self.fabric._create_firestore,
+            "gcp.secretmanager": self.fabric._create_secret_manager,
         }
     
     def get_creator(self, kind: str) -> Callable:

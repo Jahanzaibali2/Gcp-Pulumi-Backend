@@ -92,6 +92,10 @@ def build_pulumi_program(ir: Dict[str, Any]):
             "storage.googleapis.com",                # For Storage Buckets
             "pubsub.googleapis.com",                 # For Pub/Sub Topics
             "run.googleapis.com",                    # For Cloud Run Services
+            "cloudfunctions.googleapis.com",          # For Cloud Functions
+            "cloudbuild.googleapis.com",              # Required for Cloud Functions (builds)
+            "firestore.googleapis.com",              # For Firestore
+            "secretmanager.googleapis.com",           # For Secret Manager
         ]
         
         # Enable APIs (this is idempotent - safe to call multiple times)
@@ -127,7 +131,8 @@ def build_pulumi_program(ir: Dict[str, Any]):
         
         # Create fabric and apply IR (all resources will belong to this project)
         # Pass project_number to fabric so it can construct Storage service account email
-        fabric = GcpFabric(project_id=project_id, region=region, project_number=project_number)
+        # Pass api_services so resources can depend on APIs being enabled
+        fabric = GcpFabric(project_id=project_id, region=region, project_number=project_number, api_services=api_services)
         fabric.apply_ir(ir)
         
         # Export outputs
