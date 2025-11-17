@@ -79,7 +79,17 @@ def preview(req: PreviewRequest):
 def up(req: UpRequest):
     try:
         _export_gcp_creds(req.creds)
-        return PulumiEngine.up(req.ir.model_dump())
+        result = PulumiEngine.up(req.ir.model_dump())
+        
+        # Check if the result contains an error
+        if result.get("error"):
+            # Return 409 for resource conflicts, 400 for other errors
+            status_code = 409 if result.get("error_type") == "resource_conflict" else 400
+            raise HTTPException(status_code=status_code, detail=result)
+        
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

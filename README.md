@@ -59,16 +59,13 @@ uvicorn app.main:app --reload
         "props": { "image": "gcr.io/cloudrun/hello", "env": { "LOG_LEVEL": "info" }, "allowUnauthenticated": true } },
       { "id": "sm-1",  "kind": "gcp.secretmanager", "name": "app-secrets",
         "props": { "secretValue": "my-secret-value" } },
-      { "id": "cf-1",  "kind": "gcp.cloudfunctions", "name": "processor",
-        "props": { "runtime": "python311", "entryPoint": "main", "sourceArchiveBucket": "my-bucket", "sourceArchiveObject": "function.zip" } },
       { "id": "fs-1",  "kind": "gcp.firestore", "name": "app-db",
         "props": { "locationId": "us-central" } }
     ],
     "edges": [
       { "from": "gcs-1", "to": "ps-1",  "intent": "notify" },
       { "from": "ps-1",  "to": "run-1", "intent": "notify" },
-      { "from": "run-1", "to": "sm-1",  "intent": "access" },
-      { "from": "cf-1",  "to": "fs-1",  "intent": "write" }
+      { "from": "run-1", "to": "sm-1",  "intent": "access" }
     ]
   },
   "creds": {
@@ -80,7 +77,7 @@ uvicorn app.main:app --reload
 }
 ```
 
-### Supported Services (6)
+### Supported Services (5)
 
 1. **gcp.storage** - Cloud Storage Bucket
    - Props: `uniformAccess` (bool), `forceDestroy` (bool), `labels` (dict)
@@ -94,17 +91,13 @@ uvicorn app.main:app --reload
 4. **gcp.secretmanager** - Secret Manager Secret
    - Props: `secretValue` (string, optional) - Initial secret value
 
-5. **gcp.cloudfunctions** - Cloud Functions (Gen 2)
-   - Props: `runtime` (string, default: "python311"), `entryPoint` (string, default: "main"), `sourceArchiveBucket` (string, required), `sourceArchiveObject` (string, required), `availableMemoryMb` (int, default: 256), `timeout` (int, default: 60), `environmentVariables` (dict)
-
-6. **gcp.firestore** - Firestore Database (Native mode)
+5. **gcp.firestore** - Firestore Database (Native mode)
    - Props: `locationId` (string, default: "us-central")
 
 ### Supported Edge Types
 
 - **notify** - Event-driven notifications (Storage → Pub/Sub, Pub/Sub → Cloud Run)
 - **access** - IAM-based access (Cloud Run → Secret Manager)
-- **write** - Write permissions (Cloud Functions → Firestore)
 
 ### Project Creation Behavior
 
@@ -113,6 +106,75 @@ uvicorn app.main:app --reload
   - Project ID format: `{project}-{env}` (e.g., `clean-architecture-prod`)
   - Requires `orgId` in creds to create new projects
   - If `orgId` is not provided, assumes project already exists
+
+## Validation & Error Handling
+
+The system includes comprehensive validation and error handling to catch issues before and during deployment.
+
+### Pre-Deployment Validation
+
+The `/preview` and `/up` endpoints automatically validate your IR payload before deployment:
+
+- **Resource Name Validation**: Checks for valid naming conventions
+- **Uniqueness Warnings**: Alerts about potential conflicts (Firestore databases, Storage buckets, Secret Manager secrets)
+- **Configuration Validation**: Validates region, location IDs, and other configuration parameters
+- **Edge Validation**: Ensures all edges reference valid nodes
+
+**Example validation response:**
+```json
+{
+  "preview": false,
+  "validation_failed": true,
+  "errors": [
+    "Firestore node 'fs-1': Invalid locationId 'invalid-location'..."
+  ],
+  "warnings": [
+    "Firestore node 'fs-1': Database name 'clean-database' must be unique within the project...",
+    "Storage node 'gcs-1': Bucket name 'my-bucket' must be globally unique..."
+  ],
+  "message": "Validation failed. Please fix the errors before deploying."
+}
+```
+
+### Error Handling
+
+The system provides detailed error messages for common deployment issues:
+
+#### Resource Conflict Errors (409)
+
+When a resource with the same name already exists, you'll receive a structured error response:
+
+```json
+{
+  "error": true,
+  "error_type": "resource_conflict",
+  "message": "Firestore database 'clean-database' already exists. GCP resources must have unique names. Please use a different name or delete the existing resource first.",
+  "detailed_error": "Error creating Database: googleapi: Error 409: Database already exists...",
+  "suggestions": [
+    "Use a different name for the firestore database",
+    "Delete the existing firestore database if it's safe to do so",
+    "Check if you can reuse the existing firestore database instead of creating a new one"
+  ]
+}
+```
+
+**Common Resource Conflicts:**
+- **Firestore Databases**: Only one database per name per project. GCP projects typically have a default database named `(default)`.
+- **Storage Buckets**: Bucket names must be globally unique across all GCP projects.
+- **Secret Manager Secrets**: Secret names must be unique within a project.
+
+**HTTP Status Codes:**
+- `409 Conflict`: Resource already exists (resource_conflict)
+- `400 Bad Request`: Other validation or deployment errors
+
+### Best Practices
+
+1. **Use Unique Names**: Include project ID, environment, or timestamp in resource names to avoid conflicts
+2. **Check Before Deploy**: Use `/preview` endpoint to validate your payload before deployment
+3. **Handle Existing Resources**: If a resource already exists, either:
+   - Use a different name
+   - Delete the existing resource (if safe)
+   - Reuse the existing resource instead of creating a new one
 
 ## Architecture
 
@@ -125,11 +187,10 @@ The system uses a **scalable registry pattern** that makes it easy to add new se
 
 ### Free Tier Services
 
-All 6 services are eligible for GCP free tier:
+All 5 services are eligible for GCP free tier:
 - **Cloud Storage**: 5GB storage, 5K Class A operations/month
 - **Pub/Sub**: 10GB message storage, 10M operations/month
 - **Cloud Run**: 2 million requests/month, 360K GB-seconds
-- **Cloud Functions Gen 2**: 2 million invocations/month
 - **Firestore**: 1GB storage, 50K reads/day, 20K writes/day
 - **Secret Manager**: 6 secrets, 10K access operations/month
 
@@ -139,7 +200,7 @@ All 6 services are eligible for GCP free tier:
 
 1. **Create the service method** in `GcpFabric`:
    ```python
-   def _create_cloud_function(self, node: Dict[str, Any]):
+   def _create_new_service(self, node: Dict[str, Any]):
        # Implementation here
        pass
    ```
@@ -150,7 +211,9 @@ All 6 services are eligible for GCP free tier:
        "gcp.storage": self.fabric._create_storage,
        "gcp.pubsub": self.fabric._create_pubsub,
        "gcp.run": self.fabric._create_cloud_run,
-       "gcp.cloudfunctions": self.fabric._create_cloud_function,  # Add this
+       "gcp.firestore": self.fabric._create_firestore,
+       "gcp.secretmanager": self.fabric._create_secret_manager,
+       "gcp.newservice": self.fabric._create_new_service,  # Add this
    }
    ```
 
@@ -158,7 +221,7 @@ All 6 services are eligible for GCP free tier:
    ```python
    self._connectors: Dict[Tuple[str, str, str], ConnectFn] = {
        # ... existing connectors
-       ("gcp.cloudfunctions", "gcp.run", "notify"): self._wire_function_to_run,
+       ("gcp.newservice", "gcp.run", "notify"): self._wire_newservice_to_run,
    }
    ```
 

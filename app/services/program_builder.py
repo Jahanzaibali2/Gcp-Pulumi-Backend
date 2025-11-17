@@ -92,23 +92,37 @@ def build_pulumi_program(ir: Dict[str, Any]):
             "storage.googleapis.com",                # For Storage Buckets
             "pubsub.googleapis.com",                 # For Pub/Sub Topics
             "run.googleapis.com",                    # For Cloud Run Services
-            "cloudfunctions.googleapis.com",          # For Cloud Functions
-            "cloudbuild.googleapis.com",              # Required for Cloud Functions (builds)
             "firestore.googleapis.com",              # For Firestore
             "secretmanager.googleapis.com",           # For Secret Manager
         ]
         
         # Enable APIs (this is idempotent - safe to call multiple times)
-        # Cloud Resource Manager will be enabled first, then others can be enabled
+        # Cloud Resource Manager must be enabled first, then others can be enabled
         api_services = []
+        cloudresourcemanager_api = None
+        
         for api in required_apis:
-            api_service = gcp.projects.Service(
-                f"enable-{api.replace('.', '-')}",
-                project=project_id,
-                service=api,
-                disable_on_destroy=False,
-            )
-            api_services.append(api_service)
+            # Cloud Resource Manager must be enabled first
+            if api == "cloudresourcemanager.googleapis.com":
+                cloudresourcemanager_api = gcp.projects.Service(
+                    f"enable-{api.replace('.', '-')}",
+                    project=project_id,
+                    service=api,
+                    disable_on_destroy=False,
+                )
+                api_services.append(cloudresourcemanager_api)
+            else:
+                # Other APIs depend on Cloud Resource Manager
+                api_service = gcp.projects.Service(
+                    f"enable-{api.replace('.', '-')}",
+                    project=project_id,
+                    service=api,
+                    disable_on_destroy=False,
+                    opts=pulumi.ResourceOptions(
+                        depends_on=[cloudresourcemanager_api] if cloudresourcemanager_api else None
+                    )
+                )
+                api_services.append(api_service)
         
         pulumi.log.info(f"Enabling required APIs for project {project_id}")
         
@@ -139,6 +153,23 @@ def build_pulumi_program(ir: Dict[str, Any]):
         pulumi.export("projectId", project_id)
         pulumi.export("projectName", project_name)
         pulumi.export("region", region)
-        pulumi.export("fabricOutputs", fabric.outputs())
+        # Export fabric outputs - properly combine Output objects into a dict
+        fabric_outputs = fabric.outputs()
+        if fabric_outputs:
+            # Use Output.all() with keyword arguments to combine all outputs
+            # Then use apply() to reconstruct the dictionary with original keys
+            output_values = list(fabric_outputs.values())
+            output_keys = list(fabric_outputs.keys())
+            
+            # Combine all outputs into a single Output of a list
+            combined_output = pulumi.Output.all(*output_values)
+            
+            # Use apply to reconstruct the dictionary with original keys
+            output_dict = combined_output.apply(
+                lambda values: dict(zip(output_keys, values))
+            )
+            pulumi.export("fabricOutputs", output_dict)
+        else:
+            pulumi.export("fabricOutputs", {})
 
     return program

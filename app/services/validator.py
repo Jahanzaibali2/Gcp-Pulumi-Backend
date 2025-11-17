@@ -34,15 +34,6 @@ VALID_GCP_REGIONS = [
     "southamerica-east1", "northamerica-northeast1",
 ]
 
-# Valid Cloud Functions runtimes
-VALID_CLOUD_FUNCTIONS_RUNTIMES = [
-    "python311", "python312", "python313",
-    "nodejs18", "nodejs20",
-    "go121", "go122",
-    "java17", "java21",
-    "dotnet6", "dotnet8",
-]
-
 class ValidationError(Exception):
     """Custom exception for validation errors"""
     pass
@@ -75,8 +66,6 @@ class IRValidator:
             kind = node.get("kind")
             if kind == "gcp.firestore":
                 self._validate_firestore(node)
-            elif kind == "gcp.cloudfunctions":
-                self._validate_cloud_function(node)
             elif kind == "gcp.storage":
                 self._validate_storage(node)
             elif kind == "gcp.pubsub":
@@ -106,6 +95,7 @@ class IRValidator:
         """Validate Firestore database configuration"""
         props = node.get("props", {})
         location_id = props.get("locationId", "nam5")
+        name = node.get("name") or node.get("id", "")
         
         if location_id not in VALID_FIRESTORE_LOCATIONS:
             self.errors.append(
@@ -113,45 +103,22 @@ class IRValidator:
                 f"Valid locations: {', '.join(VALID_FIRESTORE_LOCATIONS[:5])}... "
                 f"(Use 'nam5' for us-central multi-region, or a specific region like 'us-central1')"
             )
-    
-    def _validate_cloud_function(self, node: Dict[str, Any]):
-        """Validate Cloud Function configuration"""
-        props = node.get("props", {})
         
-        # Check required fields
-        if not props.get("sourceArchiveBucket"):
-            self.errors.append(
-                f"Cloud Function node '{node.get('id')}': Missing required prop 'sourceArchiveBucket'. "
-                "Cloud Functions require a source archive bucket."
-            )
-        
-        if not props.get("sourceArchiveObject"):
-            self.errors.append(
-                f"Cloud Function node '{node.get('id')}': Missing required prop 'sourceArchiveObject'. "
-                "Cloud Functions require a source archive object (zip file)."
-            )
-        
-        # Validate runtime
-        runtime = props.get("runtime", "python311")
-        if runtime not in VALID_CLOUD_FUNCTIONS_RUNTIMES:
+        # Warning: Firestore databases must have unique names within a project
+        # GCP projects typically have only one default database named "(default)"
+        # If you're trying to create a database with a name that already exists, you'll get a 409 error
+        if name.lower() == "(default)" or name.lower() == "default":
             self.warnings.append(
-                f"Cloud Function node '{node.get('id')}': Runtime '{runtime}' may not be supported. "
-                f"Valid runtimes: {', '.join(VALID_CLOUD_FUNCTIONS_RUNTIMES)}"
+                f"Firestore node '{node.get('id')}': Using name '(default)' - this is the default database name. "
+                "If a default database already exists in this project, creation will fail with a 409 error. "
+                "Consider using a different database name."
             )
-        
-        # Validate memory
-        memory_mb = props.get("availableMemoryMb", 256)
-        if memory_mb < 128 or memory_mb > 8192:
+        else:
             self.warnings.append(
-                f"Cloud Function node '{node.get('id')}': Memory {memory_mb}MB is outside typical range (128-8192MB)."
-            )
-        
-        # Validate timeout
-        timeout = props.get("timeout", 60)
-        if timeout < 1 or timeout > 540:
-            self.errors.append(
-                f"Cloud Function node '{node.get('id')}': Timeout {timeout}s is invalid. "
-                "Must be between 1 and 540 seconds."
+                f"Firestore node '{node.get('id')}': Database name '{name}' must be unique within the project. "
+                "If a database with this name already exists, creation will fail with a 409 error. "
+                "Note: GCP projects typically have only one default database named '(default)'. "
+                "Use a unique name or delete the existing database first."
             )
     
     def _validate_storage(self, node: Dict[str, Any]):
@@ -171,6 +138,13 @@ class IRValidator:
                 f"Storage node '{node.get('id')}': Bucket name '{name}' contains invalid characters. "
                 "Should only contain lowercase letters, numbers, hyphens, and underscores."
             )
+        
+        # Warning: Bucket names must be globally unique across all GCP projects
+        self.warnings.append(
+            f"Storage node '{node.get('id')}': Bucket name '{name}' must be globally unique. "
+            "If a bucket with this name already exists in any GCP project, creation will fail. "
+            "Consider using a more unique name (e.g., include project ID or timestamp)."
+        )
     
     def _validate_pubsub(self, node: Dict[str, Any]):
         """Validate Pub/Sub topic configuration"""
@@ -226,6 +200,13 @@ class IRValidator:
                 f"Secret Manager node '{node.get('id')}': Secret name '{name}' contains invalid characters. "
                 "Should only contain letters, numbers, hyphens, and underscores."
             )
+        
+        # Warning: Secret names must be unique within a project
+        self.warnings.append(
+            f"Secret Manager node '{node.get('id')}': Secret name '{name}' must be unique within the project. "
+            "If a secret with this name already exists, creation will fail with a 409 conflict error. "
+            "Consider using a more unique name or checking if the secret already exists."
+        )
     
     def _validate_edges(self, nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]]):
         """Validate edge connections"""
